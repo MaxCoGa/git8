@@ -1,0 +1,2 @@
+ALTER TABLE repositories
+ADD COLUMN public BOOLEAN NOT NULL DEFAULT false;

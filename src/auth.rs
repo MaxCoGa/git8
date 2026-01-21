@@ -1,10 +1,9 @@
 use axum::{
-    body::Body,
-    extract::{Extension, State},
-    http::{header, Request, StatusCode},
-    middleware::Next,
+    extract::{FromRequestParts, State},
+    http::{request::Parts, HeaderMap, StatusCode},
     response::{IntoResponse, Json, Response},
 };
+use async_trait::async_trait;
 use bcrypt::{hash, verify, DEFAULT_COST};
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
@@ -19,6 +18,39 @@ pub struct User {
     username: String,
     #[serde(skip_serializing)]
     password_hash: String,
+}
+
+pub struct AuthUser(pub User);
+
+#[async_trait]
+impl FromRequestParts<AppState> for AuthUser {
+    type Rejection = Response;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
+        let token = get_token_from_header(&parts.headers).ok_or_else(|| {
+            (StatusCode::UNAUTHORIZED, "Missing or invalid authorization header").into_response()
+        })?;
+
+        let user = validate_token(token, state).await.map_err(|e| e.into_response())?;
+        Ok(AuthUser(user))
+    }
+}
+
+#[derive(Clone)]
+pub struct PermissiveAuthUser(pub Option<User>);
+
+#[async_trait]
+impl FromRequestParts<AppState> for PermissiveAuthUser {
+    type Rejection = Response; // This rejection is infallible, but the trait requires it.
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
+        let user = if let Some(token) = get_token_from_header(&parts.headers) {
+            validate_token(token, state).await.ok()
+        } else {
+            None
+        };
+        Ok(PermissiveAuthUser(user))
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -39,7 +71,7 @@ pub struct LoginResponse {
 }
 
 pub async fn register_handler(
-    Extension(state): Extension<AppState>,
+    State(state): State<AppState>,
     Json(payload): Json<CreateUser>,
 ) -> impl IntoResponse {
     let password_hash = match hash(payload.password, DEFAULT_COST) {
@@ -70,7 +102,7 @@ pub async fn register_handler(
 }
 
 pub async fn login_handler(
-    Extension(state): Extension<AppState>,
+    State(state): State<AppState>,
     Json(payload): Json<LoginUser>,
 ) -> impl IntoResponse {
     let result = sqlx::query_as::<_, User>("SELECT id, username, password_hash FROM users WHERE username = $1")
@@ -114,43 +146,25 @@ pub async fn login_handler(
     }
 }
 
-pub async fn auth(
-    State(state): State<AppState>,
-    mut request: Request<Body>,
-    next: Next,
-) -> Response {
-    let token = if let Some(auth_header) = request.headers().get(header::AUTHORIZATION) {
-        if let Ok(auth_str) = auth_header.to_str() {
-            if let Some(token) = auth_str.strip_prefix("Bearer ") {
-                token
-            } else {
-                return (StatusCode::UNAUTHORIZED, "Invalid authorization header format").into_response();
-            }
-        } else {
-            return (StatusCode::UNAUTHORIZED, "Invalid authorization header").into_response();
-        }
-    } else {
-        return (StatusCode::UNAUTHORIZED, "Missing authorization header").into_response();
-    };
+fn get_token_from_header(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get("Authorization")
+        .and_then(|auth_header| auth_header.to_str().ok())
+        .and_then(|auth_str| auth_str.strip_prefix("Bearer "))
+}
 
-    let result = sqlx::query_as::<_, User>(
+async fn validate_token(token: &str, state: &AppState) -> Result<User, StatusCode> {
+    sqlx::query_as::<_, User>(
         "SELECT u.id, u.username, u.password_hash FROM users u JOIN sessions s ON u.id = s.user_id WHERE s.token = $1",
     )
     .bind(token)
     .fetch_one(&state.pool)
-    .await;
-
-    match result {
-        Ok(user) => {
-            request.extensions_mut().insert(user);
-            next.run(request).await
+    .await
+    .map_err(|e| match e {
+        sqlx::Error::RowNotFound => StatusCode::UNAUTHORIZED,
+        _ => {
+            tracing::error!("Token validation failed: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
         }
-        Err(sqlx::Error::RowNotFound) => {
-            (StatusCode::UNAUTHORIZED, "Invalid token").into_response()
-        }
-        Err(e) => {
-            tracing::error!("Failed to validate token: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to validate token").into_response()
-        }
-    }
+    })
 }

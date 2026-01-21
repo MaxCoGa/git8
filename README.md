@@ -18,7 +18,7 @@ This project implements a simple Git server using Rust and Axum. It provides end
 
 ### Protected Routes (require authentication)
 
-*   `POST /repos/:name`: Create a new repository.
+*   `POST /repos`: Create a new repository.
 *   `DELETE /repos/:name`: Delete a repository.
 
 ## `curl` Examples
@@ -61,16 +61,16 @@ This project implements a simple Git server using Rust and Axum. It provides end
 
 *   **Create a new repository (authenticated):**
 
-    First, log in and get your token. Then, use the token in the `Authorization` header.
+    First, log in and get your token. Then, use the token in the `Authorization` header. The request body should be a JSON object with the repository `name` and a boolean `public` field.
 
     ```bash
     # Replace <token> with the token from the login response
-    curl -X POST -H "Authorization: Bearer <token>" http://localhost:3000/repos/my-new-secret-repo
+    curl -X POST -H "Authorization: Bearer <token>" -H "Content-Type: application/json" -d '{"name": "my-new-repo", "public": false}' http://localhost:3000/repos
     ```
 
 *   **Delete a repository (authenticated):**
 
     ```bash
     # Replace <token> with the token from the login response
-    curl -X DELETE -H "Authorization: Bearer <token>" http://localhost:3000/repos/my-new-secret-repo
+    curl -X DELETE -H "Authorization: Bearer <token>" http://localhost:3000/repos/my-new-repo
     ```

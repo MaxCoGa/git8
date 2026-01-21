@@ -1,8 +1,5 @@
 use axum::{
-    routing::{any, get, post, delete},
-    Router,
-    Extension,
-    middleware,
+    routing::{any, get, post, delete, Router},
 };
 use std::net::SocketAddr;
 use std::path::Path as StdPath;
@@ -56,27 +53,23 @@ async fn main() {
         pool,
     };
 
-    let protected_routes = Router::new()
-        .route("/repos/:name", post(git_api::create_repo_handler))
-        .route("/repos/:name", delete(git_api::delete_repo_handler))
-        .route_layer(middleware::from_fn_with_state(state.clone(), auth::auth));
-
     let app = Router::new()
         .route("/register", post(auth::register_handler))
         .route("/login", post(auth::login_handler))
         .route("/repos", get(git_api::list_repos_handler))
+        .route("/repos", post(git_api::create_repo_handler))
+        .route("/repos/:name", delete(git_api::delete_repo_handler))
         .route("/repos/:name/branches", get(git_api::list_branches_handler))
         .route("/repos/:name/tree/:branch", get(git_api::list_files_root_handler))
         .route("/repos/:name/tree/:branch/", get(git_api::list_files_root_handler))
         .route("/repos/:name/tree/:branch/*path", get(git_api::list_files_subdirectory_handler))
         .route("/repos/:name/commits/:branch", get(git_api::commit_history_handler))
-        .merge(protected_routes)
         .fallback(any(git_backend::handler))
-        .layer(TraceLayer::new_for_http())
-        .layer(Extension(state));
+        .with_state(state)
+        .layer(TraceLayer::new_for_http());
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
     tracing::debug!("listening on {}", addr);
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    axum::serve(listener, app.into_make_service()).await.unwrap();
 }

@@ -67,6 +67,8 @@ curl -X POST -H "Content-Type: application/json" -d '{"username": "admin", "pass
 create repos:
 curl -X POST -H "Authorization: Bearer your_long_auth_token_string" http://localhost:3000/repos/my-new-repo
 
+curl -X POST -H "Authorization: Bearer ZtA4MIHLofk7R7uMoCGTiaPllrPlU6BK" -H "Content-Type: application/json" -d '{"name": "my-new-repo", "public": false}' http://localhost:3000/repos
+
 
 delete repos:
 curl -X DELETE -H "Authorization: Bearer your_long_auth_token_string" http://localhost:3000/repos/my-new-repo

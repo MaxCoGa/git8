@@ -1,11 +1,12 @@
 use axum::{
-    extract::Path,
+    extract::{Extension, Path},
     http::StatusCode,
-    response::{IntoResponse, Response, Json},
+    response::{IntoResponse, Json, Response},
 };
 use serde::Serialize;
 use std::path::Path as StdPath;
 
+use crate::{auth, AppState};
 
 #[derive(Serialize)]
 pub struct Repo {
@@ -45,7 +46,9 @@ pub async fn list_repos_handler() -> Response {
         if let Ok(path) = path {
             if let Some(repo_name) = path.file_name().to_str() {
                 if repo_name.ends_with(".git") {
-                    repos.push(Repo { name: repo_name.strip_suffix(".git").unwrap().to_string() });
+                    repos.push(Repo {
+                        name: repo_name.strip_suffix(".git").unwrap().to_string(),
+                    });
                 }
             }
         }
@@ -84,11 +87,17 @@ pub async fn list_files_root_handler(Path((name, branch)): Path<(String, String)
     list_files_implementation(name, branch, None).await
 }
 
-pub async fn list_files_subdirectory_handler(Path((name, branch, path)): Path<(String, String, String)>) -> Response {
+pub async fn list_files_subdirectory_handler(
+    Path((name, branch, path)): Path<(String, String, String)>,
+) -> Response {
     list_files_implementation(name, branch, Some(path)).await
 }
 
-pub async fn list_files_implementation(name: String, branch: String, path: Option<String>) -> Response {
+pub async fn list_files_implementation(
+    name: String,
+    branch: String,
+    path: Option<String>,
+) -> Response {
     let repo_path = StdPath::new("./repos").join(format!("{}.git", name));
     let repo = match git2::Repository::open(&repo_path) {
         Ok(repo) => repo,
@@ -102,12 +111,24 @@ pub async fn list_files_implementation(name: String, branch: String, path: Optio
 
     let commit = match branch.get().peel_to_commit() {
         Ok(commit) => commit,
-        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to get commit for branch").into_response(),
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to get commit for branch",
+            )
+                .into_response()
+        }
     };
 
     let tree = match commit.tree() {
         Ok(tree) => tree,
-        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to get tree for commit").into_response(),
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to get tree for commit",
+            )
+                .into_response()
+        }
     };
 
     let target_tree = if let Some(path) = path {
@@ -120,11 +141,23 @@ pub async fn list_files_implementation(name: String, branch: String, path: Optio
                 Ok(entry) => match entry.to_object(&repo) {
                     Ok(object) => match object.into_tree() {
                         Ok(tree) => tree,
-                        Err(_) => return (StatusCode::NOT_FOUND, "Path is not a directory").into_response(),
+                        Err(_) => {
+                            return (StatusCode::NOT_FOUND, "Path is not a directory")
+                                .into_response()
+                        }
                     },
-                    Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to resolve path object").into_response(),
+                    Err(_) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "Failed to resolve path object",
+                        )
+                            .into_response()
+                    }
                 },
-                Err(_) => return (StatusCode::NOT_FOUND, "Path not found in repository").into_response(),
+                Err(_) => {
+                    return (StatusCode::NOT_FOUND, "Path not found in repository")
+                        .into_response()
+                }
             }
         }
     } else {
@@ -159,6 +192,7 @@ pub async fn commit_history_handler(Path((name, branch_name)): Path<(String, Str
     let branch = match repo.find_branch(&branch_name, git2::BranchType::Local) {
         Ok(branch) => branch,
         Err(_) => {
+            // Fallback to remote branch if local not found
             match repo.find_branch(&format!("origin/{}", branch_name), git2::BranchType::Remote) {
                 Ok(branch) => branch,
                 Err(_) => return (StatusCode::NOT_FOUND, "Branch not found").into_response(),
@@ -168,16 +202,32 @@ pub async fn commit_history_handler(Path((name, branch_name)): Path<(String, Str
 
     let commit = match branch.get().peel_to_commit() {
         Ok(commit) => commit,
-        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to get commit for branch").into_response(),
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to get commit for branch",
+            )
+                .into_response()
+        }
     };
 
     let mut revwalk = match repo.revwalk() {
         Ok(walk) => walk,
-        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to create revision walker").into_response(),
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to create revision walker",
+            )
+                .into_response()
+        }
     };
-    
+
     if let Err(_) = revwalk.push(commit.id()) {
-        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to push commit to revision walker").into_response();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to push commit to revision walker",
+        )
+            .into_response();
     }
 
     let mut commits = Vec::new();
@@ -186,7 +236,9 @@ pub async fn commit_history_handler(Path((name, branch_name)): Path<(String, Str
             if let Ok(commit) = repo.find_commit(oid) {
                 let author = commit.author();
                 let author_name = author.name().unwrap_or("Unknown");
-                let date = chrono::DateTime::from_timestamp(commit.time().seconds(), 0).unwrap().to_rfc2822();
+                let date = chrono::DateTime::from_timestamp(commit.time().seconds(), 0)
+                    .unwrap()
+                    .to_rfc2822();
 
                 commits.push(Commit {
                     id: oid.to_string(),
@@ -201,18 +253,22 @@ pub async fn commit_history_handler(Path((name, branch_name)): Path<(String, Str
     Json(commits).into_response()
 }
 
-pub async fn create_repo_handler(Path(name): Path<String>) -> Response {
+pub async fn create_repo_handler(
+    Path(name): Path<String>,
+    Extension(user): Extension<auth::User>,
+    Extension(state): Extension<AppState>,
+) -> Response {
     if name.is_empty() || name.contains('/') || name.contains("..") {
         return (StatusCode::BAD_REQUEST, "Invalid repository name").into_response();
     }
 
-    let repo_name = if name.ends_with(".git") {
-        name
+    let repo_name_git = if name.ends_with(".git") {
+        name.clone()
     } else {
         format!("{}.git", name)
     };
 
-    let path = StdPath::new("./repos").join(&repo_name);
+    let path = StdPath::new("./repos").join(&repo_name_git);
 
     if path.exists() {
         return (StatusCode::CONFLICT, "Repository already exists").into_response();
@@ -220,10 +276,12 @@ pub async fn create_repo_handler(Path(name): Path<String>) -> Response {
 
     match git2::Repository::init_bare(&path) {
         Ok(repo) => {
+            // Configure the repo
             match repo.config() {
                 Ok(mut config) => {
                     if let Err(e) = config.set_bool("http.receivepack", true) {
-                        tracing::error!("Failed to set http.receivepack for {}: {}", repo_name, e);
+                        tracing::error!("Failed to set http.receivepack for {}: {}", repo_name_git, e);
+                        let _ = std::fs::remove_dir_all(&path);
                         return (
                             StatusCode::INTERNAL_SERVER_ERROR,
                             "Failed to configure repository for pushes",
@@ -232,7 +290,8 @@ pub async fn create_repo_handler(Path(name): Path<String>) -> Response {
                     }
                 }
                 Err(e) => {
-                    tracing::error!("Failed to open config for {}: {}", repo_name, e);
+                    tracing::error!("Failed to open config for {}: {}", repo_name_git, e);
+                    let _ = std::fs::remove_dir_all(&path);
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         "Failed to configure repository",
@@ -241,11 +300,31 @@ pub async fn create_repo_handler(Path(name): Path<String>) -> Response {
                 }
             }
 
-            tracing::info!("Created and configured new repository: {}", repo_name);
-            (StatusCode::CREATED, format!("Repository {} created", repo_name)).into_response()
+            let repo_name_db = name.strip_suffix(".git").unwrap_or(&name).to_string();
+            let result = sqlx::query("INSERT INTO repositories (name, user_id) VALUES ($1, $2)")
+                .bind(&repo_name_db)
+                .bind(user.id)
+                .execute(&state.pool)
+                .await;
+
+            match result {
+                Ok(_) => {
+                    tracing::info!("Created and configured new repository: {}", repo_name_git);
+                    (StatusCode::CREATED, format!("Repository {} created", repo_name_db)).into_response()
+                }
+                Err(e) => {
+                    tracing::error!("Failed to record repository ownership for {}: {}", repo_name_db, e);
+                    let _ = std::fs::remove_dir_all(&path);
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Failed to create repository due to database error",
+                    )
+                        .into_response()
+                }
+            }
         }
         Err(e) => {
-            tracing::error!("Failed to create repository: {}", e);
+            tracing::error!("Failed to create repository filesystem: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to create repository",
@@ -255,33 +334,72 @@ pub async fn create_repo_handler(Path(name): Path<String>) -> Response {
     }
 }
 
-pub async fn delete_repo_handler(Path(name): Path<String>) -> Response {
+pub async fn delete_repo_handler(
+    Path(name): Path<String>,
+    Extension(user): Extension<auth::User>,
+    Extension(state): Extension<AppState>,
+) -> Response {
     if name.is_empty() || name.contains('/') || name.contains("..") {
         return (StatusCode::BAD_REQUEST, "Invalid repository name").into_response();
     }
 
-    let repo_name = if name.ends_with(".git") {
-        name
-    } else {
-        format!("{}.git", name)
-    };
+    let repo_name = name.strip_suffix(".git").unwrap_or(&name).to_string();
 
-    let path = StdPath::new("./repos").join(&repo_name);
+    let owner_result = sqlx::query_as::<_, (i32,)>("SELECT user_id FROM repositories WHERE name = $1")
+        .bind(&repo_name)
+        .fetch_one(&state.pool)
+        .await;
 
-    if !path.exists() {
-        return (StatusCode::NOT_FOUND, "Repository not found").into_response();
-    }
-
-    match std::fs::remove_dir_all(&path) {
-        Ok(_) => {
-            tracing::info!("Deleted repository: {}", repo_name);
-            (StatusCode::OK, format!("Repository {} deleted", repo_name)).into_response()
+    match owner_result {
+        Ok((owner_id,)) => {
+            if owner_id != user.id {
+                return (StatusCode::FORBIDDEN, "You do not have permission to delete this repository").into_response();
+            }
+        }
+        Err(sqlx::Error::RowNotFound) => {
+            return (StatusCode::NOT_FOUND, "Repository not found in database").into_response();
         }
         Err(e) => {
-            tracing::error!("Failed to delete repository '{}': {}", repo_name, e);
+            tracing::error!("Failed to query repository ownership for {}: {}", repo_name, e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to check repository ownership").into_response();
+        }
+    }
+
+    match sqlx::query("DELETE FROM repositories WHERE name = $1")
+        .bind(&repo_name)
+        .execute(&state.pool)
+        .await
+    {
+        Ok(_) => { // Deletion from DB successful, now delete from filesystem
+             let repo_name_git = format!("{}.git", repo_name);
+             let path = StdPath::new("./repos").join(&repo_name_git);
+
+            if !path.exists() {
+                tracing::warn!("Repository '{}' existed in DB but not on filesystem. Inconsistency.", repo_name);
+                return (StatusCode::OK, format!("Repository {} deleted", repo_name)).into_response();
+            }
+
+            match std::fs::remove_dir_all(&path) {
+                Ok(_) => {
+                    tracing::info!("Deleted repository: {}", repo_name);
+                    (StatusCode::OK, format!("Repository {} deleted", repo_name)).into_response()
+                }
+                Err(e) => {
+                    // TODO: This is bad. The DB record is gone but the files remain.
+                    tracing::error!("Failed to delete repository filesystem for '{}' after deleting DB record: {}", repo_name, e);
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Failed to fully delete repository. Please contact an administrator.",
+                    )
+                        .into_response()
+                }
+            }
+        }
+        Err(e) => {
+             tracing::error!("Failed to delete repository record for {}: {}", repo_name, e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to delete repository",
+                "Failed to delete repository from database",
             )
                 .into_response()
         }

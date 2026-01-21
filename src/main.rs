@@ -1,18 +1,26 @@
 use axum::{
-    routing::{any, get, post},
-    Router,
+    routing::{any, get, post, delete, Router},
 };
 use std::net::SocketAddr;
 use std::path::Path as StdPath;
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use sqlx::PgPool;
 
 mod git_backend;
 mod git_api;
+mod db;
+mod auth;
 
+#[derive(Clone)]
+pub struct AppState {
+    pool: PgPool,
+}
 
 #[tokio::main]
 async fn main() {
+    dotenv::dotenv().ok();
+
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -28,19 +36,40 @@ async fn main() {
         }
     }
 
+    let pool = match db::create_pool().await {
+        Ok(pool) => pool,
+        Err(e) => {
+            tracing::error!("Failed to create database pool: {}", e);
+            return;
+        }
+    };
+
+    if let Err(e) = db::run_migrations(&pool).await {
+        tracing::error!("Failed to run database migrations: {}", e);
+        return;
+    }
+    
+    let state = AppState {
+        pool,
+    };
+
     let app = Router::new()
+        .route("/register", post(auth::register_handler))
+        .route("/login", post(auth::login_handler))
         .route("/repos", get(git_api::list_repos_handler))
-        .route("/repos/:name", post(git_api::create_repo_handler).delete(git_api::delete_repo_handler))
+        .route("/repos", post(git_api::create_repo_handler))
+        .route("/repos/:name", delete(git_api::delete_repo_handler))
         .route("/repos/:name/branches", get(git_api::list_branches_handler))
         .route("/repos/:name/tree/:branch", get(git_api::list_files_root_handler))
         .route("/repos/:name/tree/:branch/", get(git_api::list_files_root_handler))
         .route("/repos/:name/tree/:branch/*path", get(git_api::list_files_subdirectory_handler))
         .route("/repos/:name/commits/:branch", get(git_api::commit_history_handler))
         .fallback(any(git_backend::handler))
+        .with_state(state)
         .layer(TraceLayer::new_for_http());
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
     tracing::debug!("listening on {}", addr);
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    axum::serve(listener, app.into_make_service()).await.unwrap();
 }

@@ -23,3 +23,52 @@ curl -X GET http://localhost:3000/repos/test/commits/main
 list file:
 curl -X GET http://localhost:3000/repos/test/tree/main
 
+
+
+
+
+
+------------------------
+postgresql:
+
+initialize the PostgreSQL database cluster:
+initdb -D ./.data/db
+
+
+star db server:
+pg_ctl -D ./.data/db -l logfile start
+pg_ctl -D .data/db -l logfile -o "-c listen_addresses='*'" start
+pg_ctl -D .data/db -l logfile -o "-c listen_addresses='*' -c unix_socket_directories='/tmp'" start
+
+
+create the database:
+createdb -h 127.0.0.1 githome
+
+
+drop db:
+dropdb -h 127.0.0.1 git_clone_db
+
+migrate table with sqlx:
+cargo install sqlx-cli
+sqlx migrate add -r create_repositories_table
+
+/home/user/.cargo/bin/sqlx migrate run
+
+-------------
+Register:
+curl -X POST -H "Content-Type: application/json" -d '{"username": "admin", "password": "pswd"}' http://localhost:3000/register
+
+
+Login:
+curl -X POST -H "Content-Type: application/json" -d '{"username": "admin", "password": "pswd"}' http://localhost:3000/login
+
+
+
+create repos:
+curl -X POST -H "Authorization: Bearer your_long_auth_token_string" http://localhost:3000/repos/my-new-repo
+
+curl -X POST -H "Authorization: Bearer ZtA4MIHLofk7R7uMoCGTiaPllrPlU6BK" -H "Content-Type: application/json" -d '{"name": "my-new-repo", "public": false}' http://localhost:3000/repos
+
+
+delete repos:
+curl -X DELETE -H "Authorization: Bearer your_long_auth_token_string" http://localhost:3000/repos/my-new-repo

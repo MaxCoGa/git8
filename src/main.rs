@@ -11,6 +11,7 @@ mod git_backend;
 mod git_api;
 mod db;
 mod auth;
+mod issues;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -64,6 +65,17 @@ async fn main() {
         .route("/repos/:name/tree/:branch/", get(git_api::list_files_root_handler))
         .route("/repos/:name/tree/:branch/*path", get(git_api::list_files_subdirectory_handler))
         .route("/repos/:name/commits/:branch", get(git_api::commit_history_handler))
+        .route("/repos/:name/issues", post(issues::create_issue))
+        .route("/repos/:name/issues", get(issues::list_issues))
+        .route("/repos/:name/issues/:issue_id", get(issues::get_issue))
+        .route("/repos/:name/issues/:issue_id/comments", post(issues::create_comment))
+        .route("/repos/:name/issues/:issue_id/comments", get(issues::list_comments))
+        .route("/repos/:name/labels", post(issues::create_label))
+        .route("/repos/:name/labels", get(issues::list_labels))
+        .route("/repos/:name/issues/:issue_id/labels/:label_name", post(issues::add_label_to_issue))
+        .route("/repos/:name/issues/:issue_id/labels/:label_name", delete(issues::remove_label_from_issue))
+        .route("/repos/:name/issues/:issue_id/assignees/:assignee_username", post(issues::add_assignee_to_issue))
+        .route("/repos/:name/issues/:issue_id/assignees/:assignee_username", delete(issues::remove_assignee_from_issue))
         .fallback(any(git_backend::handler))
         .with_state(state)
         .layer(TraceLayer::new_for_http());

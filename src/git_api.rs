@@ -115,6 +115,16 @@ pub async fn create_repo_handler(
         return (StatusCode::CONFLICT, "Repository already exists on filesystem").into_response();
     }
 
+    let existing_repo: Option<(i32,)> = sqlx::query_as("SELECT id FROM repositories WHERE name = $1")
+        .bind(name)
+        .fetch_optional(&state.pool)
+        .await
+        .unwrap_or(None);
+
+    if existing_repo.is_some() {
+        return (StatusCode::CONFLICT, "Repository already exists in database").into_response();
+    }
+
     match git2::Repository::init_bare(&path) {
         Ok(repo) => {
             if let Ok(mut config) = repo.config() {
@@ -137,14 +147,16 @@ pub async fn create_repo_handler(
                     (StatusCode::CREATED, Json(Repo { name: repo_name_db, public: is_public })).into_response()
                 }
                 Err(e) => {
-                    tracing::error!("Failed to record repository ownership: {}", e);
-                    let _ = std::fs::remove_dir_all(&path);
+                    tracing::error!("Failed to record repository ownership: {}. Cleaning up filesystem.", e);
+                    if let Err(fs_err) = std::fs::remove_dir_all(&path) {
+                        tracing::error!("Failed to cleanup repository filesystem: {}", fs_err);
+                    }
                     (StatusCode::INTERNAL_SERVER_ERROR, "Failed to create repository").into_response()
                 }
             }
         }
         Err(e) => {
-            tracing::error!("Failed to create repository filesystem: {}", e);
+            tracing::error!("Failed to create repository on filesystem: {}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, "Failed to create repository").into_response()
         }
     }
@@ -186,7 +198,6 @@ pub async fn delete_repo_handler(
     if path.exists() {
         if let Err(e) = std::fs::remove_dir_all(&path) {
             tracing::error!("Failed to delete repository filesystem: {}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to fully delete repository").into_response();
         }
     }
 
@@ -216,14 +227,18 @@ async fn list_files_implementation(name: String, branch: String, path: Option<St
         Err(_) => return (StatusCode::NOT_FOUND, "Repository not found").into_response(),
     };
 
-    let branch = match repo.find_branch(&branch, git2::BranchType::Local) {
-        Ok(branch) => branch,
+    let branch_ref = format!("refs/heads/{}", branch);
+    let oid = match repo.find_reference(&branch_ref) {
+        Ok(reference) => reference.target(),
         Err(_) => return (StatusCode::NOT_FOUND, "Branch not found").into_response(),
     };
 
-    let commit = match branch.get().peel_to_commit() {
-        Ok(commit) => commit,
-        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to get commit for branch").into_response(),
+    let commit = match oid {
+        Some(oid) => match repo.find_commit(oid) {
+            Ok(commit) => commit,
+            Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to find commit").into_response(),
+        },
+        None => return (StatusCode::INTERNAL_SERVER_ERROR, "Branch reference is not a direct OID").into_response(),
     };
 
     let tree = match commit.tree() {
@@ -231,13 +246,13 @@ async fn list_files_implementation(name: String, branch: String, path: Option<St
         Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to get tree for commit").into_response(),
     };
 
-    let target_tree = if let Some(path) = path {
-        let path = path.strip_prefix("/").unwrap_or(&path);
-        let path = path.strip_suffix("/").unwrap_or(&path);
-        if path.is_empty() {
+    let target_tree = if let Some(p) = path {
+        let p = p.strip_prefix("/").unwrap_or(&p);
+        let p = p.strip_suffix("/").unwrap_or(&p);
+        if p.is_empty() {
             tree
         } else {
-            match tree.get_path(StdPath::new(path)) {
+            match tree.get_path(StdPath::new(p)) {
                 Ok(entry) => match entry.to_object(&repo) {
                     Ok(object) => match object.into_tree() {
                         Ok(tree) => tree,

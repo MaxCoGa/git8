@@ -15,7 +15,7 @@ use crate::AppState;
 #[derive(Debug, Serialize, FromRow, Clone)]
 pub struct User {
     pub id: i32,
-    username: String,
+    pub username: String,
     #[serde(skip_serializing)]
     password_hash: String,
 }

@@ -1,0 +1,1 @@
+ALTER TABLE pull_request_comments RENAME COLUMN user_id TO author_id;
